@@ -2,7 +2,9 @@
 using Shipwreck.Phash;
 using Shipwreck.Phash.Bitmaps;
 using System.Drawing;
-using ImageMagick;
+using System.Drawing.Imaging;
+using SkiaSharp;
+using System.Runtime.InteropServices;
 
 namespace ImageInfoService
 {
@@ -97,25 +99,44 @@ namespace ImageInfoService
 
         private static long ComputePHash(Stream imageStream)
         {
-            return 0;
-            //imageStream.Seek(0, SeekOrigin.Begin); // Reset stream position
+            imageStream.Seek(0, SeekOrigin.Begin); // Reset stream position
 
-            //// Create a Bitmap from the stream
-            //using (var image = new MagickImage(imageStream))
-            //{
-            //    if (image is Bitmap)
-            //    {
-            //        var bmp = (Bitmap)image; // More compact in C#7 but not sure whether that's supported in AWS Lambda: if (image is Bitmap bmp)
-            //        // Compute the PHash
-            //        var digest = ImagePhash.ComputeDigest(bmp.ToLuminanceImage());
+            // Load the image into SKBitmap from the MemoryStream
+            SKBitmap skiaBitmap;
+            using (var skiaStream = new SKManagedStream(imageStream))
+            {
+                skiaBitmap = SKBitmap.Decode(skiaStream);
+            }
 
-            //        // Convert the digest to a long for easier storage and comparison
-            //        return ConvertDigestToLong(digest);
-            //    }
-            //    else
-            //        throw new Exception($"Image type is unsupported {image.GetType()}");
-            //}
+            // Create a System.Drawing.Bitmap with the same dimensions
+            Bitmap sysBitmap = new Bitmap(skiaBitmap.Width, skiaBitmap.Height, PixelFormat.Format32bppArgb);
+
+            // Lock the bitmap's bits
+            Rectangle rect = new Rectangle(0, 0, sysBitmap.Width, sysBitmap.Height);
+            BitmapData bmpData = sysBitmap.LockBits(rect, ImageLockMode.WriteOnly, sysBitmap.PixelFormat);
+
+            // Get the address of the first line
+            IntPtr ptr = bmpData.Scan0;
+
+            // Declare an array to hold the bytes of the bitmap
+            int bytes = Math.Abs(bmpData.Stride) * sysBitmap.Height;
+            byte[] rgbValues = new byte[bytes];
+
+            // Copy the RGB values from the SKBitmap to the array
+            Marshal.Copy(skiaBitmap.GetPixels(), rgbValues, 0, bytes);
+
+            // Copy the RGB values to the System.Drawing.Bitmap
+            Marshal.Copy(rgbValues, 0, ptr, bytes);
+
+            // Unlock the bits
+            sysBitmap.UnlockBits(bmpData);
+
+            var digest = ImagePhash.ComputeDigest(sysBitmap.ToLuminanceImage());
+
+            // Convert the digest to a long for easier storage and comparison
+            return ConvertDigestToLong(digest);
         }
+
         private static long ConvertDigestToLong(Digest digest)
         {
             long result = 0;
